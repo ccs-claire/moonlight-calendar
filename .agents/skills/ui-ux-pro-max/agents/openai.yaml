@@ -1,0 +1,7 @@
+interface:
+  display_name: "UI/UX Pro Max"
+  short_description: "Searchable UI design guidance for better interfaces"
+  brand_color: "#2563EB"
+  default_prompt: "Use $ui-ux-pro-max to improve this interface for its users and devices."
+policy:
+  allow_implicit_invocation: true
