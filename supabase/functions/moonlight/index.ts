@@ -168,7 +168,9 @@ async function telegram(env,method,payload){const encrypted=await setting(env,'t
 async function notifyRequest(env,bookingId){const chatId=await setting(env,'telegram_chat_id');if(!chatId||!await setting(env,'telegram_token'))return 'not_configured';const b=await one(env,'SELECT b.*,d.name AS doctor_name,r.name AS requester_name FROM ml_bookings b JOIN ml_users d ON d.id=b.doctor_id JOIN ml_users r ON r.id=b.requester_id WHERE b.id=?',bookingId);try{let answers=[],uploads=[];try{answers=JSON.parse(b.reliever_answers||'[]')}catch{}try{uploads=JSON.parse(b.reliever_uploads||'[]')}catch{}const responses=answers.map(x=>`${x.question}: ${x.answer}`).join('\n').slice(0,2600),uploadSummary=uploads.length?`\nRequired uploads received: ${uploads.map(x=>x.kind).join(', ')}`:'';const text=b.reliever_post_id?`New Reliever post request #${bookingId}\n${b.requester_name}\n${b.date}, ${b.start_time}–${b.end_time} (Asia/Manila)\n${b.location}${responses?`\n\nRequired skill responses:\n${responses}`:''}${uploadSummary}\nOpen Moonlight Calendar to approve or decline.`:`New moonlighting request #${bookingId}\n${b.requester_name} → ${b.doctor_name}\n${b.date}, ${b.start_time}–${b.end_time} (Asia/Manila)\nOpen Moonlight Calendar to approve or decline.`;await telegram(env,'sendMessage',{chat_id:chatId,text});await run(env,"UPDATE ml_bookings SET notification_state='sent' WHERE id=?",bookingId);return 'sent'}catch{await run(env,"UPDATE ml_bookings SET notification_state='failed' WHERE id=?",bookingId);return 'failed'}}
 
 async function api(req,env,url){
- const method=req.method,route=url.pathname.replace(/^\/functions\/v1\/moonlight/,'');
+ const method=req.method,route=url.pathname
+  .replace(/^\/functions\/v1\/moonlight(?=\/|$)/,'')
+  .replace(/^\/moonlight(?=\/|$)/,'')||'/';
  if(method==='GET'&&route==='/api/bootstrap'){const count=await one(env,'SELECT COUNT(*) AS n FROM ml_users');return result({needsSetup:count.n===0,setupKeyRequired:true});}
  if(method==='POST'&&route==='/api/setup'){
   if(!env.ADMIN_SETUP_KEY)problem('Set ADMIN_SETUP_KEY as an Edge Function secret before creating the admin account.',503);
