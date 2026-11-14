@@ -170,10 +170,12 @@ async function relieverPosts(env,month){
   (SELECT 1 FROM ml_bookings b WHERE b.reliever_post_id=p.id) ORDER BY p.date,p.start_time,p.id`,from,to,manilaToday());
 }
 async function attendanceFor(env,user){
- const rows=await all(env,`SELECT a.*,b.date,b.end_date,b.start_time,b.end_time,b.status,b.doctor_id,b.requester_id,b.reliever_post_id,d.name AS doctor_name,r.name AS requester_name
+ const rows=await all(env,`SELECT a.booking_id,a.clock_in_at,a.clock_out_at,a.document_name,a.entry_source,a.evidence_note,
+   a.clock_in_photo IS NOT NULL AS has_clock_in_photo,a.clock_out_photo IS NOT NULL AS has_clock_out_photo,a.document_file IS NOT NULL AS has_document,
+   b.date,b.end_date,b.start_time,b.end_time,b.status,b.doctor_id,b.requester_id,b.reliever_post_id,d.name AS doctor_name,r.name AS requester_name
    FROM ml_attendance a JOIN ml_bookings b ON b.id=a.booking_id JOIN ml_users d ON d.id=b.doctor_id JOIN ml_users r ON r.id=b.requester_id
    ${user.role==='admin'?'':'WHERE b.requester_id=?'} ORDER BY a.clock_in_at DESC LIMIT 200`,...(user.role==='admin'?[]:[user.id]));
- return rows.map(({clock_in_photo,clock_out_photo,document_file,clock_in_mime,clock_out_mime,...rest})=>({...rest,has_clock_in_photo:!!clock_in_photo,has_clock_out_photo:!!clock_out_photo,has_document:!!document_file}));
+ return rows;
 }
 async function doctorSummaries(env){return all(env,`SELECT u.id,u.name,u.email,u.role,u.active,
   (SELECT COUNT(*) FROM ml_bookings b WHERE b.requester_id=u.id AND b.status='pending') AS pending_count,

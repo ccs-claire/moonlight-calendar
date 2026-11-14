@@ -236,7 +236,7 @@ body{background:#f4f6fa}
 body{background:#f4f7fb}
 .workspace{background:#f4f7fb}
 .topbar{box-shadow:0 1px 0 rgba(20,42,76,.025)}
-.page{view-transition-name:page-content}
+.page{view-transition-name:none}
 .page-heading{margin-bottom:28px}
 .page-heading h1{font-size:clamp(28px,2.6vw,34px);letter-spacing:-.045em}
 .eyebrow{letter-spacing:.11em}
@@ -277,9 +277,9 @@ body{background:#f4f7fb}
 .help-icon{display:grid;place-items:center;width:36px;height:36px;flex:none;border-radius:11px;background:#fff;color:#2563eb}
 .personal-calendar-help strong{font-size:14px}
 .personal-calendar-help p{margin:4px 0 0;color:#52637d;font-size:13px;line-height:1.55}
-.page-enter{animation:page-enter .28s cubic-bezier(.2,.75,.25,1) both}
+.page-enter{animation:page-enter .12s ease-out both}
 ::view-transition-old(page-content){animation:page-leave .16s ease both}
-::view-transition-new(page-content){animation:page-enter .28s cubic-bezier(.2,.75,.25,1) both}
+::view-transition-new(page-content){animation:page-enter .12s ease-out both}
 @keyframes page-enter{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:translateY(0)}}
 @keyframes page-leave{to{opacity:0;transform:translateY(-5px)}}
 @media(max-width:680px){
@@ -653,3 +653,5 @@ body{color:var(--ink);background:var(--canvas);overscroll-behavior-y:contain}
 .my-calendar-event-more{font-size:9px;font-weight:750;color:var(--muted)}
 .my-calendar-day:focus-visible,.my-week-heading:focus-visible{outline:2px solid #5c83e8;outline-offset:-2px}
 @media(max-width:760px){.my-schedule-details{scroll-margin-top:76px}.my-schedule-details-heading{align-items:flex-start}.my-period-details>summary{min-height:42px;display:flex;align-items:center}}
+
+.page-loading{padding:32px 20px;color:var(--muted);font-size:14px}
