@@ -84,7 +84,7 @@ async function openTimes(env,month){
 }
 async function relieverPosts(env,month){
  const [from,to]=monthRange(month);
- return all(env,`SELECT p.id,p.created_by,p.date,p.start_time,p.end_time,p.location,p.rate_cents,p.required_questions,p.created_at,u.name AS posted_by_name
+ return all(env,`SELECT p.id,p.created_by,p.date,p.start_time,p.end_time,p.location,p.rate_cents,p.required_questions,p.required_uploads,p.created_at,u.name AS posted_by_name
   FROM ml_reliever_posts p JOIN ml_users u ON u.id=p.created_by AND u.active=1 AND u.deleted_at IS NULL
   WHERE p.active=1 AND p.date>=? AND p.date<? AND p.date>=? AND NOT EXISTS
   (SELECT 1 FROM ml_bookings b WHERE b.reliever_post_id=p.id) ORDER BY p.date,p.start_time,p.id`,from,to,manilaToday());
@@ -113,7 +113,7 @@ function validEvidence(input,kind){
 }
 async function uploadEvidence(env,input,kind){if(!env.EVIDENCE)problem('R2 EVIDENCE binding is not configured.',503);const bytes=validEvidence(input,kind),key=`moonlight/evidence/${crypto.randomUUID()}`;await env.EVIDENCE.put(key,bytes,{httpMetadata:{contentType:input.mime}});return key;}
 async function telegram(env,method,payload){const encrypted=await setting(env,'telegram_token');if(!encrypted)problem('Add a Telegram bot token in Settings first.',409);const token=await decrypt(env,encrypted);try{const response=await fetch(`https://api.telegram.org/bot${token}/${method}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(8000)});const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.description||'Telegram rejected the request.');return data.result}catch(error){problem(`Telegram could not complete the request: ${error.name==='TimeoutError'?'Telegram timed out.':error.message}`,502)}}
-async function notifyRequest(env,bookingId){const chatId=await setting(env,'telegram_chat_id');if(!chatId||!await setting(env,'telegram_token'))return 'not_configured';const b=await one(env,'SELECT b.*,d.name AS doctor_name,r.name AS requester_name FROM ml_bookings b JOIN ml_users d ON d.id=b.doctor_id JOIN ml_users r ON r.id=b.requester_id WHERE b.id=?',bookingId);try{let answers=[];try{answers=JSON.parse(b.reliever_answers||'[]')}catch{}const responses=answers.map(x=>`${x.question}: ${x.answer}`).join('\n').slice(0,2800);const text=b.reliever_post_id?`New Reliever post request #${bookingId}\n${b.requester_name}\n${b.date}, ${b.start_time}–${b.end_time} (Asia/Manila)\n${b.location}${responses?`\n\nRequired skill responses:\n${responses}`:''}\nOpen Moonlight Calendar to approve or decline.`:`New moonlighting request #${bookingId}\n${b.requester_name} → ${b.doctor_name}\n${b.date}, ${b.start_time}–${b.end_time} (Asia/Manila)\nOpen Moonlight Calendar to approve or decline.`;await telegram(env,'sendMessage',{chat_id:chatId,text});await run(env,"UPDATE ml_bookings SET notification_state='sent' WHERE id=?",bookingId);return 'sent'}catch{await run(env,"UPDATE ml_bookings SET notification_state='failed' WHERE id=?",bookingId);return 'failed'}}
+async function notifyRequest(env,bookingId){const chatId=await setting(env,'telegram_chat_id');if(!chatId||!await setting(env,'telegram_token'))return 'not_configured';const b=await one(env,'SELECT b.*,d.name AS doctor_name,r.name AS requester_name FROM ml_bookings b JOIN ml_users d ON d.id=b.doctor_id JOIN ml_users r ON r.id=b.requester_id WHERE b.id=?',bookingId);try{let answers=[],uploads=[];try{answers=JSON.parse(b.reliever_answers||'[]')}catch{}try{uploads=JSON.parse(b.reliever_uploads||'[]')}catch{}const responses=answers.map(x=>`${x.question}: ${x.answer}`).join('\n').slice(0,2600),uploadSummary=uploads.length?`\nRequired uploads received: ${uploads.map(x=>x.kind).join(', ')}`:'';const text=b.reliever_post_id?`New Reliever post request #${bookingId}\n${b.requester_name}\n${b.date}, ${b.start_time}–${b.end_time} (Asia/Manila)\n${b.location}${responses?`\n\nRequired skill responses:\n${responses}`:''}${uploadSummary}\nOpen Moonlight Calendar to approve or decline.`:`New moonlighting request #${bookingId}\n${b.requester_name} → ${b.doctor_name}\n${b.date}, ${b.start_time}–${b.end_time} (Asia/Manila)\nOpen Moonlight Calendar to approve or decline.`;await telegram(env,'sendMessage',{chat_id:chatId,text});await run(env,"UPDATE ml_bookings SET notification_state='sent' WHERE id=?",bookingId);return 'sent'}catch{await run(env,"UPDATE ml_bookings SET notification_state='failed' WHERE id=?",bookingId);return 'failed'}}
 
 async function api(req,env,url){
  const method=req.method,route=url.pathname;
@@ -233,10 +233,11 @@ async function api(req,env,url){
   const input=await readBody(req);checkWindow(input);const location=text(input.location,120,'Location'),cents=rate(input.hourlyRate);
   if(!Array.isArray(input.requiredQuestions)||input.requiredQuestions.length<1||input.requiredQuestions.length>8)problem('Add between 1 and 8 required skill questions.');
   const questions=input.requiredQuestions.map(item=>{const question=String(item?.question||'').trim(),type=item?.type;if(!question||question.length>160||!['yes_no','details'].includes(type))problem('Each required skill question needs a description and a valid response type.');return {question,type}});
+  const requiredUploads=input.requiredUploads??[];if(!Array.isArray(requiredUploads)||requiredUploads.some(kind=>!['photo','document'].includes(kind))||new Set(requiredUploads).size!==requiredUploads.length)problem('Choose valid required uploads.');
   const today=manilaToday();if(input.date<today)problem('Choose today or a future date in Philippine Time.');
   const duplicate=await one(env,'SELECT id FROM ml_reliever_posts WHERE created_by=? AND date=? AND start_time=? AND end_time=? AND location=? AND active=1 AND NOT EXISTS(SELECT 1 FROM ml_bookings WHERE reliever_post_id=ml_reliever_posts.id)',user.id,input.date,input.start,input.end,location);
   if(duplicate)problem('You already have an open Reliever post for this time and location.',409);
-  const inserted=await run(env,'INSERT INTO ml_reliever_posts(created_by,date,start_time,end_time,location,rate_cents,required_questions) VALUES(?,?,?,?,?,?,?)',user.id,input.date,input.start,input.end,location,cents,JSON.stringify(questions));
+  const inserted=await run(env,'INSERT INTO ml_reliever_posts(created_by,date,start_time,end_time,location,rate_cents,required_questions,required_uploads) VALUES(?,?,?,?,?,?,?,?)',user.id,input.date,input.start,input.end,location,cents,JSON.stringify(questions),JSON.stringify(requiredUploads));
   return result({id:inserted.meta.last_row_id},201);
  }
  const relieverPostMatch=/^\/api\/reliever-posts\/(\d+)$/.exec(route);
@@ -251,21 +252,28 @@ async function api(req,env,url){
  if(relieverRequestMatch&&method==='POST'){
   const user=await requireUser(req,env);if(!['admin','doctor'].includes(user.role))problem('Only doctors can request Reliever posts.',403);
   const postId=id(relieverRequestMatch[1]),input=await readBody(req),note=String(input.note||'').trim();if(note.length>500)problem('Note must be 500 characters or fewer.');
-  const post=await one(env,`SELECT p.required_questions FROM ml_reliever_posts p JOIN ml_users creator ON creator.id=p.created_by AND creator.active=1 AND creator.deleted_at IS NULL WHERE p.id=? AND p.active=1 AND p.date>=? AND p.created_by<>? AND NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE b.reliever_post_id=p.id)`,postId,manilaToday(),user.id);
+  const post=await one(env,`SELECT p.required_questions,p.required_uploads FROM ml_reliever_posts p JOIN ml_users creator ON creator.id=p.created_by AND creator.active=1 AND creator.deleted_at IS NULL WHERE p.id=? AND p.active=1 AND p.date>=? AND p.created_by<>? AND NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE b.reliever_post_id=p.id)`,postId,manilaToday(),user.id);
   if(!post)problem('This Reliever post has already been requested or is unavailable.',409);
   let questions=[];try{questions=JSON.parse(post.required_questions||'[]')}catch{problem('The Reliever post has invalid skill questions.',500)}
   if(!Array.isArray(input.answers)||input.answers.length!==questions.length)problem('Answer every required skill question.');
   const answers=questions.map((q,index)=>{const answer=String(input.answers[index]?.answer||'').trim();if(!answer||answer.length>500||(q.type==='yes_no'&&!['yes','no'].includes(answer)))problem(`Answer “${q.question}” with ${q.type==='yes_no'?'Yes or No':'details'}.`);return {question:q.question,type:q.type,answer}});
+  let requiredUploads=[];try{requiredUploads=JSON.parse(post.required_uploads||'[]')}catch{problem('The Reliever post has invalid upload requirements.',500)}
+  if(!Array.isArray(requiredUploads)||requiredUploads.some(kind=>!['photo','document'].includes(kind))||new Set(requiredUploads).size!==requiredUploads.length)problem('The Reliever post has invalid upload requirements.',500);
+  const provided=input.uploads||{};if(Object.keys(provided).some(kind=>!requiredUploads.includes(kind))||requiredUploads.some(kind=>!provided[kind]))problem('Attach every required photo or document.');
+  const uploads=[];
+  try{
+   for(const kind of requiredUploads){const file=provided[kind],key=await uploadEvidence(env,file,kind),filename=String(file.name||`${kind}.${file.mime==='application/pdf'?'pdf':file.mime==='image/png'?'png':file.mime==='image/webp'?'webp':'jpg'}`).replace(/[\\/\r\n\"<>]/g,'_').slice(0,120);uploads.push({kind,key,filename,mime:file.mime});}
   const today=manilaToday();
-  let inserted;try{inserted=await run(env,`INSERT INTO ml_bookings(doctor_id,requester_id,date,start_time,end_time,note,rate_cents,location,approval_owner,reliever_post_id,reliever_answers,status)
-   SELECT ?,?,p.date,p.start_time,p.end_time,?,p.rate_cents,p.location,'admin',p.id,?,'pending' FROM ml_reliever_posts p
+  let inserted;try{inserted=await run(env,`INSERT INTO ml_bookings(doctor_id,requester_id,date,start_time,end_time,note,rate_cents,location,approval_owner,reliever_post_id,reliever_answers,reliever_uploads,status)
+   SELECT ?,?,p.date,p.start_time,p.end_time,?,p.rate_cents,p.location,'admin',p.id,?,?,'pending' FROM ml_reliever_posts p
    JOIN ml_users creator ON creator.id=p.created_by AND creator.active=1 AND creator.deleted_at IS NULL
    WHERE p.id=? AND p.active=1 AND p.date>=? AND p.created_by<>?
    AND NOT EXISTS(SELECT 1 FROM ml_bookings existing WHERE existing.reliever_post_id=p.id)
    AND NOT EXISTS(SELECT 1 FROM ml_bookings existing WHERE existing.requester_id=? AND existing.date=p.date AND existing.status='approved' AND existing.start_time<p.end_time AND existing.end_time>p.start_time)
-   LIMIT 1`,user.id,user.id,note,JSON.stringify(answers),postId,today,user.id,user.id)}catch(error){if(String(error.message).includes('UNIQUE'))problem('This Reliever post has already been requested or is unavailable.',409);throw error;}
+   LIMIT 1`,user.id,user.id,note,JSON.stringify(answers),JSON.stringify(uploads),postId,today,user.id,user.id)}catch(error){if(String(error.message).includes('UNIQUE'))problem('This Reliever post has already been requested or is unavailable.',409);throw error;}
   if(inserted.meta.changes!==1)problem('This Reliever post has already been requested or is unavailable.',409);
   const bookingId=inserted.meta.last_row_id;return result({id:bookingId,notification:await notifyRequest(env,bookingId)},201);
+  }catch(error){for(const file of uploads)await env.EVIDENCE.delete(file.key);throw error;}
  }
  const availabilityMatch=/^\/api\/availability\/(\d+)$/.exec(route);
  if(availabilityMatch&&method==='PATCH'){const user=await requireUser(req,env),slotId=id(availabilityMatch[1]),input=await readBody(req),slot=await one(env,'SELECT doctor_id FROM ml_availability WHERE id=?',slotId);if(!slot)problem('Open time not found.',404);if(user.role!=='admin'&&(user.role!=='doctor'||slot.doctor_id!==user.id))problem('You can edit only your own open time.',403);const updated=await run(env,'UPDATE ml_availability SET rate_cents=? WHERE id=?',rate(input.hourlyRate),slotId);if(updated.meta.changes!==1)problem('Open time not found.',404);return result({ok:true});}
@@ -407,6 +415,17 @@ async function api(req,env,url){
    if(updated.meta.changes!==1)problem('Shift time record changed. Refresh and try again.',409);
   }catch(error){for(const key of uploaded)await env.EVIDENCE.delete(key);throw error;}
   return result({ok:true});
+ }
+ const relieverEvidenceMatch=/^\/api\/reliever-evidence\/(\d+)\/(\d+)$/.exec(route);
+ if(relieverEvidenceMatch&&method==='GET'){
+  const user=await requireUser(req,env),bookingId=id(relieverEvidenceMatch[1]),index=Number(relieverEvidenceMatch[2]);
+  const booking=await one(env,'SELECT requester_id,reliever_uploads FROM ml_bookings WHERE id=? AND reliever_post_id IS NOT NULL',bookingId);
+  if(!booking||(user.role!=='admin'&&booking.requester_id!==user.id))problem('Evidence not found.',404);
+  let uploads=[];try{uploads=JSON.parse(booking.reliever_uploads||'[]')}catch{}
+  const file=uploads[index];if(!file?.key)problem('Evidence not found.',404);
+  if(!env.EVIDENCE)problem('R2 EVIDENCE binding is not configured.',503);const object=await env.EVIDENCE.get(file.key);if(!object)problem('Evidence file is missing. Contact an admin.',404);
+  const filename=String(file.filename||file.kind||'file').replace(/[\r\n\"<>]/g,'_');
+  return new Response(object.body,{headers:{'Content-Type':file.mime||'application/octet-stream','Content-Disposition':`${file.kind==='photo'?'inline':'attachment'}; filename="${filename}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
  }
  const evidenceMatch=/^\/api\/evidence\/(\d+)\/(in|out|document)$/.exec(route);
  if(evidenceMatch&&method==='GET'){

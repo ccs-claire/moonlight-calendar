@@ -126,7 +126,7 @@ function openTimes(month) {
 function relieverPosts(month) {
   const [from,to]=monthRange(month);
   const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
-    return all(`SELECT p.id,p.created_by,p.date,p.start_time,p.end_time,p.location,p.rate_cents,p.required_questions,p.created_at,u.name AS posted_by_name
+    return all(`SELECT p.id,p.created_by,p.date,p.start_time,p.end_time,p.location,p.rate_cents,p.required_questions,p.required_uploads,p.created_at,u.name AS posted_by_name
     FROM reliever_posts p JOIN users u ON u.id=p.created_by AND u.active=1 AND u.deleted_at IS NULL
     WHERE p.active=1 AND p.date>=? AND p.date<? AND p.date>=?
     AND NOT EXISTS(SELECT 1 FROM bookings b WHERE b.reliever_post_id=p.id)
@@ -187,7 +187,9 @@ async function notifyRequest(id) {
   try {
     let answers=[];try{answers=JSON.parse(b.reliever_answers||'[]')}catch{}
     const responses=answers.map(x=>`${x.question}: ${x.answer}`).join('\n').slice(0,2800);
-    await telegram('sendMessage',{chat_id:chatId,text:b.reliever_post_id?`New Reliever post request #${id}\n${b.requester_name}\n${b.date}, ${b.start_time}–${b.end_time} (Asia/Manila)\n${b.location}${responses?`\n\nRequired skill responses:\n${responses}`:''}\nOpen Moonlight Calendar to approve or decline.`:`New moonlighting request #${id}\n${b.requester_name} → ${b.doctor_name}\n${b.date}, ${b.start_time}–${b.end_time} (Asia/Manila)\nOpen Moonlight Calendar to approve or decline.`});
+    let uploads=[];try{uploads=JSON.parse(b.reliever_uploads||'[]')}catch{}
+    const uploadSummary=uploads.length?`\nRequired uploads received: ${uploads.map(x=>x.kind).join(', ')}`:'';
+    await telegram('sendMessage',{chat_id:chatId,text:b.reliever_post_id?`New Reliever post request #${id}\n${b.requester_name}\n${b.date}, ${b.start_time}–${b.end_time} (Asia/Manila)\n${b.location}${responses?`\n\nRequired skill responses:\n${responses}`:''}${uploadSummary}\nOpen Moonlight Calendar to approve or decline.`:`New moonlighting request #${id}\n${b.requester_name} → ${b.doctor_name}\n${b.date}, ${b.start_time}–${b.end_time} (Asia/Manila)\nOpen Moonlight Calendar to approve or decline.`});
     run("UPDATE bookings SET notification_state='sent' WHERE id=?",id); return 'sent';
   } catch {run("UPDATE bookings SET notification_state='failed' WHERE id=?",id); return 'failed';}
 }
@@ -323,7 +325,8 @@ async function api(req,res,url) {
   if(method==='POST'&&route==='/api/reliever-posts'){
     const user=requireUser(req);if(!['admin','doctor'].includes(user.role))fail('Only doctors can publish Reliever posts.',403);
     const input=await body(req);let requiredQuestions=input.requiredQuestions;if(typeof requiredQuestions==='string'){try{requiredQuestions=JSON.parse(requiredQuestions)}catch{fail('Enter valid required skill questions.')}}
-    const id=store.addRelieverPost({createdBy:user.id,date:input.date,start:input.start,end:input.end,location:String(input.location||''),rateCents:rateCents(input.hourlyRate),requiredQuestions});
+    let requiredUploads=input.requiredUploads;if(typeof requiredUploads==='string'){try{requiredUploads=JSON.parse(requiredUploads)}catch{fail('Choose valid required uploads.')}}
+    const id=store.addRelieverPost({createdBy:user.id,date:input.date,start:input.start,end:input.end,location:String(input.location||''),rateCents:rateCents(input.hourlyRate),requiredQuestions,requiredUploads});
     return reply(res,201,{id});
   }
   const relieverPostMatch=/^\/api\/reliever-posts\/(\d+)$/.exec(route);
@@ -334,8 +337,17 @@ async function api(req,res,url) {
   const relieverRequestMatch=/^\/api\/reliever-posts\/(\d+)\/request$/.exec(route);
   if(relieverRequestMatch&&method==='POST'){
     const user=requireUser(req);if(!['admin','doctor'].includes(user.role))fail('Only doctors can request Reliever posts.',403);
-    const input=await body(req),id=store.requestRelieverPost({postId:Number(relieverRequestMatch[1]),requesterId:user.id,note:String(input.note||''),answers:input.answers});
-    return reply(res,201,{id,notification:await notifyRequest(id)});
+    const input=await body(req),postId=Number(relieverRequestMatch[1]),post=one('SELECT required_uploads FROM reliever_posts WHERE id=? AND active=1',postId);
+    if(!post)fail('This Reliever post has already been requested or is unavailable.',409);
+    let required=[];try{required=JSON.parse(post.required_uploads||'[]')}catch{fail('The Reliever post has invalid upload requirements.',500)}
+    if(!Array.isArray(required)||required.some(kind=>!['photo','document'].includes(kind))||new Set(required).size!==required.length)fail('The Reliever post has invalid upload requirements.',500);
+    if(!input.uploads||required.some(kind=>!input.uploads[kind]))fail('Attach every required photo or document.');
+    const saved=[];
+    try {
+      for(const kind of required){const file=input.uploads[kind],key=saveEvidence(file,kind);saved.push({kind,key,filename:String(file.name||`${kind}.${file.mime==='application/pdf'?'pdf':file.mime==='image/png'?'png':file.mime==='image/webp'?'webp':'jpg'}`).replace(/[\\/\r\n\"<>]/g,'_').slice(0,120),mime:file.mime});}
+      const id=store.requestRelieverPost({postId,requesterId:user.id,note:String(input.note||''),answers:input.answers,uploads:saved});
+      return reply(res,201,{id,notification:await notifyRequest(id)});
+    } catch(error) {for(const item of saved)removeEvidence(item.key);throw error;}
   }
   const availabilityMatch=/^\/api\/availability\/(\d+)$/.exec(route);
   if (availabilityMatch && method==='PATCH') {
@@ -437,6 +449,16 @@ async function api(req,res,url) {
     } catch(e) {removeEvidence(photo);removeEvidence(document);throw e;}
     if(document && oldDocument)removeEvidence(oldDocument);
     return reply(res,200,{ok:true});
+  }
+  const relieverEvidenceMatch=/^\/api\/reliever-evidence\/(\d+)\/(\d+)$/.exec(route);
+  if(relieverEvidenceMatch&&method==='GET'){
+    const user=requireUser(req),bookingId=Number(relieverEvidenceMatch[1]),index=Number(relieverEvidenceMatch[2]);
+    const booking=one('SELECT requester_id,reliever_uploads FROM bookings WHERE id=? AND reliever_post_id IS NOT NULL',bookingId);
+    if(!booking||(user.role!=='admin'&&booking.requester_id!==user.id))fail('Evidence not found.',404);
+    let uploads=[];try{uploads=JSON.parse(booking.reliever_uploads||'[]')}catch{}
+    const file=uploads[index];if(!file?.key)fail('Evidence not found.',404);
+    const bytes=fs.readFileSync(path.join(evidenceDir,file.key));
+    res.writeHead(200,{'Content-Type':file.mime||'application/octet-stream','Content-Disposition':`${file.kind==='photo'?'inline':'attachment'}; filename="${String(file.filename||file.kind).replace(/[\r\n\"<>]/g,'_')}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'});res.end(bytes);return;
   }
   const evidenceMatch=/^\/api\/evidence\/(\d+)\/(in|out|document)$/.exec(route);
   if(evidenceMatch && method==='GET') {

@@ -50,6 +50,7 @@ export function openStore(path) {
       date TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL,
       location TEXT NOT NULL, rate_cents INTEGER NOT NULL,
       required_questions TEXT NOT NULL DEFAULT '[]',
+      required_uploads TEXT NOT NULL DEFAULT '[]',
       active INTEGER NOT NULL DEFAULT 1, legacy_availability_id INTEGER UNIQUE,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -62,6 +63,7 @@ export function openStore(path) {
       approval_owner TEXT NOT NULL DEFAULT 'admin' CHECK(approval_owner IN ('admin','assignee')),
       reliever_post_id INTEGER REFERENCES reliever_posts(id),
       reliever_answers TEXT NOT NULL DEFAULT '[]',
+      reliever_uploads TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL CHECK(status IN ('pending','approved','declined','cancelled')),
       notification_state TEXT NOT NULL DEFAULT 'not_configured',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, decided_at TEXT
@@ -79,7 +81,9 @@ export function openStore(path) {
   `);
   const columns=table=>db.prepare(`PRAGMA table_info(${table})`).all().map(c=>c.name);
   if(!columns('reliever_posts').includes('required_questions'))db.exec("ALTER TABLE reliever_posts ADD COLUMN required_questions TEXT NOT NULL DEFAULT '[]'");
+  if(!columns('reliever_posts').includes('required_uploads'))db.exec("ALTER TABLE reliever_posts ADD COLUMN required_uploads TEXT NOT NULL DEFAULT '[]'");
   if(!columns('bookings').includes('reliever_answers'))db.exec("ALTER TABLE bookings ADD COLUMN reliever_answers TEXT NOT NULL DEFAULT '[]'");
+  if(!columns('bookings').includes('reliever_uploads'))db.exec("ALTER TABLE bookings ADD COLUMN reliever_uploads TEXT NOT NULL DEFAULT '[]'");
   if(!columns('bookings').includes('end_date'))db.exec("ALTER TABLE bookings ADD COLUMN end_date TEXT NOT NULL DEFAULT ''; UPDATE bookings SET end_date=date WHERE end_date=''");
   if(!columns('users').includes('account_type')) {
     db.exec("ALTER TABLE users ADD COLUMN account_type TEXT NOT NULL DEFAULT 'doctor' CHECK(account_type IN ('admin','doctor','nurse','staff'))");
@@ -120,7 +124,7 @@ export function openStore(path) {
       return Number(run('INSERT INTO availability(doctor_id,date,start_time,end_time,location,rate_cents) VALUES(?,?,?,?,?,?)',doctorId,date,start,end,location.trim(),rateCents).lastInsertRowid);
     });
   }
-  function addRelieverPost({createdBy,date,start,end,location='',rateCents,requiredQuestions=[]}) {
+  function addRelieverPost({createdBy,date,start,end,location='',rateCents,requiredQuestions=[],requiredUploads=[]}) {
     if(!validWindow(date,start,end))fail('Enter a valid date and a start time before the end time.');
     const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
     if(date<today)fail('Choose today or a future date in Philippine Time.');
@@ -128,13 +132,14 @@ export function openStore(path) {
     if(!Number.isSafeInteger(rateCents)||rateCents<1)fail('Enter a valid hourly rate.');
     if(!Array.isArray(requiredQuestions)||requiredQuestions.length<1||requiredQuestions.length>8)fail('Add between 1 and 8 required skill questions.');
     const questions=requiredQuestions.map(item=>{const question=String(item?.question||'').trim(),type=item?.type;if(!question||question.length>160||!['yes_no','details'].includes(type))fail('Each required skill question needs a description and a valid response type.');return {question,type}});
+    if(!Array.isArray(requiredUploads)||requiredUploads.some(kind=>!['photo','document'].includes(kind))||new Set(requiredUploads).size!==requiredUploads.length)fail('Choose valid required uploads.');
     return transaction(()=>{
       if(!one("SELECT id FROM users WHERE id=? AND active=1 AND deleted_at IS NULL AND account_type IN ('doctor','admin')",createdBy))fail('Only doctors can publish Reliever posts.',403);
       if(one('SELECT id FROM reliever_posts WHERE created_by=? AND date=? AND start_time=? AND end_time=? AND location=? AND active=1 AND NOT EXISTS(SELECT 1 FROM bookings WHERE reliever_post_id=reliever_posts.id)',createdBy,date,start,end,location.trim()))fail('You already have an open Reliever post for this time and location.',409);
-      return Number(run('INSERT INTO reliever_posts(created_by,date,start_time,end_time,location,rate_cents,required_questions) VALUES(?,?,?,?,?,?,?)',createdBy,date,start,end,location.trim(),rateCents,JSON.stringify(questions)).lastInsertRowid);
+      return Number(run('INSERT INTO reliever_posts(created_by,date,start_time,end_time,location,rate_cents,required_questions,required_uploads) VALUES(?,?,?,?,?,?,?,?)',createdBy,date,start,end,location.trim(),rateCents,JSON.stringify(questions),JSON.stringify(requiredUploads)).lastInsertRowid);
     });
   }
-  function requestRelieverPost({postId,requesterId,note='',answers=[]}) {
+  function requestRelieverPost({postId,requesterId,note='',answers=[],uploads=[]}) {
     if(note.length>500)fail('Note must be 500 characters or fewer.');
     const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
     return transaction(()=>{
@@ -145,10 +150,13 @@ export function openStore(path) {
       let questions=[];try{questions=JSON.parse(post.required_questions||'[]')}catch{fail('The Reliever post has invalid skill questions.',500)}
       if(!Array.isArray(answers)||answers.length!==questions.length)fail('Answer every required skill question.');
       const normalized=questions.map((q,index)=>{const answer=String(answers[index]?.answer||'').trim();if(!answer||answer.length>500||(q.type==='yes_no'&&!['yes','no'].includes(answer)))fail(`Answer “${q.question}” with ${q.type==='yes_no'?'Yes or No':'details'}.`);return {question:q.question,type:q.type,answer}});
+      let requiredUploads=[];try{requiredUploads=JSON.parse(post.required_uploads||'[]')}catch{fail('The Reliever post has invalid upload requirements.',500)}
+      if(!Array.isArray(requiredUploads)||requiredUploads.some(kind=>!['photo','document'].includes(kind))||new Set(requiredUploads).size!==requiredUploads.length)fail('The Reliever post has invalid upload requirements.',500);
+      if(!Array.isArray(uploads)||uploads.length!==requiredUploads.length||requiredUploads.some(kind=>!uploads.some(file=>file?.kind===kind&&file.key)))fail('Attach every required photo or document.');
       if(post.created_by===requesterId)fail('You cannot request your own Reliever post.',409);
       if(!one("SELECT id FROM users WHERE id=? AND active=1 AND deleted_at IS NULL AND account_type IN ('doctor','admin')",requesterId))fail('Only doctors can request Reliever posts.',403);
       if(one("SELECT id FROM bookings WHERE requester_id=? AND date=? AND status='approved' AND start_time<? AND end_time>?",requesterId,post.date,post.end_time,post.start_time))fail('You already have a booking at this time.',409);
-      return Number(run("INSERT INTO bookings(doctor_id,requester_id,date,start_time,end_time,note,rate_cents,location,approval_owner,reliever_post_id,reliever_answers,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending')",requesterId,requesterId,post.date,post.start_time,post.end_time,note.trim(),post.rate_cents,post.location,'admin',postId,JSON.stringify(normalized)).lastInsertRowid);
+      return Number(run("INSERT INTO bookings(doctor_id,requester_id,date,start_time,end_time,note,rate_cents,location,approval_owner,reliever_post_id,reliever_answers,reliever_uploads,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending')",requesterId,requesterId,post.date,post.start_time,post.end_time,note.trim(),post.rate_cents,post.location,'admin',postId,JSON.stringify(normalized),JSON.stringify(uploads)).lastInsertRowid);
     });
   }
   function removeRelieverPost(postId,user) {
