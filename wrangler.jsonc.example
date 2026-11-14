@@ -7,19 +7,5 @@
     "directory": "./public",
     "binding": "ASSETS",
     "run_worker_first": true
-  },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "REPLACE_WITH_YOUR_D1_NAME",
-      "database_id": "REPLACE_WITH_YOUR_D1_UUID",
-      "migrations_dir": "migrations"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "EVIDENCE",
-      "bucket_name": "REPLACE_WITH_YOUR_R2_BUCKET"
-    }
-  ]
+  }
 }

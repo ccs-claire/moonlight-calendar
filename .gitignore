@@ -1,7 +1,9 @@
 data/
 .env
+.env.*
+!.env.example
 .DS_Store
-wrangler.jsonc
 .dev.vars
 .wrangler/
 node_modules/
+supabase/.env.local

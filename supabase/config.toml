@@ -1,0 +1,2 @@
+[functions.moonlight]
+verify_jwt = false
