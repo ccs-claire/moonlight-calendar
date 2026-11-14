@@ -5,7 +5,7 @@ A shared shift calendar for a moonlighting care team. Admins manage users, sched
 ## Hosting layout
 
 - **Supabase** stores all app data in Postgres and private evidence files in Storage. The login/session API runs as the `moonlight` Supabase Edge Function.
-- **Cloudflare Workers** serves the static website and forwards `/api/*` to that Edge Function. It does not use D1 or R2.
+- **Cloudflare Workers** serves the static website from its edge asset cache and forwards `/api/*` to that Edge Function. Smart Placement is enabled for API proxy work; static files are served near the visitor without invoking the Worker. It does not use D1 or R2.
 
 ## Set up Supabase
 
@@ -51,6 +51,8 @@ The repository includes `wrangler.jsonc`; do not replace it with the old D1/R2 e
 - Build command: leave blank
 - Deploy command: `npx wrangler deploy`
 
+The Wrangler config routes only `/api/*` through the Worker and enables the single-page-app fallback for calendar pages. Cloudflare caches static assets automatically. The versioned `app.js` and `styles.css` responses are browser-cached for one year; when either file changes, increment its `?v=` value in `public/index.html` so browsers fetch the new copy. Do not create a **Cache Everything** rule for `/api/*`; those responses contain session-specific data.
+
 In the Worker settings, add these runtime variables (not secrets):
 
 - `SUPABASE_FUNCTION_URL`: the function URL above.
@@ -78,11 +80,14 @@ Open the deployed site, enter `ADMIN_SETUP_KEY`, and create the first admin acco
 
 - **Dashboard:** admins see team requests and time records; other team members see their own.
 - **My Calendar / Team Calendar:** view and maintain shifts. The calendar supports day, week, month, and list views. Multiple shifts for a day are grouped in the monthly list.
+- **Recurring shifts:** in My Calendar or an admin shift offer, choose daily, weekly, every two weeks, monthly, or yearly and an end date. “Does not repeat” is the default. Recurring dates are saved as individual shifts, and the app checks the full series for conflicts before adding it.
 - **Requests & offers:** review shift requests and direct offers. Team members accept or decline admin offers.
 - **Find reliever posts:** doctors can share a post with required skill questions and required photo/document uploads. A request closes the post while an admin reviews it.
 - **Time & evidence:** record actual hours and attach clock photos and supporting files to an approved shift.
 - **Team Scorecard:** admin-only reporting for booked/completed hours, pay estimates, and missing records, with this-month, last-month, last-three-months, and custom date periods.
 - **User Management:** admin-only account roles, activation, and deletion controls.
+
+On a phone, use **More → Add to home screen**. Android opens the browser install prompt when available; iPhone and iPad show the Safari Share → **Add to Home Screen** steps. The app includes a web app manifest for a standalone home-screen launch.
 
 Set up Telegram alerts from the in-app **Telegram alerts** page: create a bot with [@BotFather](https://t.me/BotFather), start a conversation with it, enter the token and chat ID, then send a test. The bot token is stored in Supabase Postgres encrypted with `TOKEN_ENCRYPTION_KEY`.
 

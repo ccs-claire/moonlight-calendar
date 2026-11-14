@@ -23,11 +23,6 @@ export default {
   }
 
   if(!env.ASSETS)return error('Static assets are not configured.',503);
-  const pages=new Set(['/','/calendar','/team-calendar','/my-calendar','/find-shifts','/requests','/time-evidence','/team-scorecard','/doctor-management','/user-management','/telegram-alerts','/settings','/help']);
-  const assetRequest=pages.has(url.pathname)?new Request(new URL('/',url),request):request;
-  const response=await env.ASSETS.fetch(assetRequest),headers=new Headers(response.headers);
-  headers.set('Cache-Control','no-store');
-  if(response.headers.get('Content-Type')?.includes('text/html'))headers.set('Content-Security-Policy',"default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");
-  return new Response(response.body,{status:response.status,headers});
+  return env.ASSETS.fetch(request);
  }
 };

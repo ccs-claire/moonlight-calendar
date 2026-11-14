@@ -86,6 +86,37 @@ async function requireAdmin(req,env){const user=await requireUser(req,env);if(us
 async function readBody(req){const bytes=await req.arrayBuffer();if(bytes.byteLength>30*1024*1024)problem('Upload is too large. Maximum request size is 30 MB.',413);try{return JSON.parse(new TextDecoder().decode(bytes)||'{}')}catch{problem('Send valid JSON.')}}
 async function session(env,userId){const token=randomHex(32);await run(env,'INSERT INTO ml_sessions(token_hash,user_id,expires_at) VALUES(?,?,?)',await digest(token),userId,Date.now()+7*86400000);return `moonlight_session=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=604800`;}
 function checkWindow(input){const date=input.startDate||input.date,endDate=input.endDate||date,start=input.startTime||input.start,end=input.endTime||input.end;if(!validWindow(date,start,end,endDate))problem('Enter a valid start and end date and time (up to 36 hours).');if(date<manilaToday())problem('Choose today or a future date in Philippine Time.');return {date,endDate,start,end};}
+function recurringWindows(input,window){
+ const frequency=String(input.repeatFrequency||'none');
+ if(frequency==='none')return [{date:window.date,endDate:window.endDate}];
+ if(!['daily','weekly','biweekly','monthly','yearly'].includes(frequency))problem('Choose a valid repeat frequency.');
+ const until=String(input.repeatUntil||'');
+ if(!dateRe.test(until)||new Date(`${until}T00:00:00Z`).toISOString().slice(0,10)!==until||until<window.date)problem('Choose a repeat-until date on or after the shift date.');
+ const startMs=Date.parse(`${window.date}T00:00:00Z`),untilMs=Date.parse(`${until}T00:00:00Z`);
+ if(untilMs-startMs>366*86400000)problem('Recurring shifts can run for up to one year.');
+ const endOffset=(Date.parse(`${window.endDate}T00:00:00Z`)-startMs)/86400000,base=new Date(startMs),windows=[];
+ const makeDate=(step)=>{
+  const next=new Date(startMs);
+  if(frequency==='daily')next.setUTCDate(base.getUTCDate()+step);
+  if(frequency==='weekly')next.setUTCDate(base.getUTCDate()+step*7);
+  if(frequency==='biweekly')next.setUTCDate(base.getUTCDate()+step*14);
+  if(frequency==='monthly'){
+   const monthStart=new Date(Date.UTC(base.getUTCFullYear(),base.getUTCMonth()+step,1));
+   next.setTime(Date.UTC(monthStart.getUTCFullYear(),monthStart.getUTCMonth(),Math.min(base.getUTCDate(),new Date(Date.UTC(monthStart.getUTCFullYear(),monthStart.getUTCMonth()+1,0)).getUTCDate())));
+  }
+  if(frequency==='yearly')next.setTime(Date.UTC(base.getUTCFullYear()+step,base.getUTCMonth(),Math.min(base.getUTCDate(),new Date(Date.UTC(base.getUTCFullYear()+step,base.getUTCMonth()+1,0)).getUTCDate())));
+  return next.toISOString().slice(0,10);
+ };
+ for(let step=0;windows.length<367;step++){
+  const date=makeDate(step);if(date>until)break;
+  const endDate=new Date(Date.parse(`${date}T00:00:00Z`)+endOffset*86400000).toISOString().slice(0,10);
+  windows.push({date,endDate});
+ }
+ if(!windows.length)problem('This recurrence does not include a shift.');
+ const stamps=windows.map(item=>[Date.parse(`${item.date}T${window.start}:00Z`),Date.parse(`${item.endDate}T${window.end}:00Z`)]);
+ for(let i=1;i<stamps.length;i++)if(stamps[i][0]<stamps[i-1][1])problem('Recurring shifts overlap each other. Choose a longer repeat interval.');
+ return windows;
+}
 function manualTimes(input,shiftDate){
  const format=/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d$/;
  const start=String(input.clockIn||''),end=String(input.clockOut||'');
@@ -344,12 +375,15 @@ async function api(req,env,url){
   const user=await requireUser(req,env),raw=await readBody(req),input={...raw,...checkWindow(raw)};
   const note=String(input.note||'').trim(),location=text(input.location,120,'Location'),cents=rate(input.hourlyRate);
   if(note.length>500)problem('Note must be 500 characters or fewer.');
+  const windows=recurringWindows(raw,input),series=JSON.stringify(windows);
   const inserted=await run(env,`INSERT INTO ml_bookings(doctor_id,requester_id,date,end_date,start_time,end_time,note,rate_cents,location,approval_owner,status)
-   SELECT ?,?,?,?,?,?,?,?,?,'admin','approved' WHERE EXISTS(SELECT 1 FROM ml_users WHERE id=? AND active=1 AND deleted_at IS NULL)
-   AND NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE b.requester_id=? AND b.status IN ('pending','approved') AND b.date||'T'||b.start_time<? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>?)`,
-   user.id,user.id,input.date,input.endDate,input.start,input.end,note,cents,location,user.id,user.id,`${input.endDate}T${input.end}`,`${input.date}T${input.start}`);
-  if(inserted.meta.changes!==1)problem('This overlaps another shift or offer on your calendar.',409);
-  return result({id:inserted.meta.last_row_id},201);
+   SELECT ?,?,o.date,o.end_date,?,?,?,?,?,'admin','approved' FROM jsonb_to_recordset(?::jsonb) AS o(date text,end_date text)
+   WHERE EXISTS(SELECT 1 FROM ml_users WHERE id=? AND active=1 AND deleted_at IS NULL)
+   AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(?::jsonb) o JOIN ml_bookings b ON b.requester_id=? AND b.status IN ('pending','approved') AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
+   AND NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE b.requester_id=? AND b.status IN ('pending','approved') AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)`,
+   user.id,user.id,input.start,input.end,note,cents,location,series,user.id,series,user.id,input.end,input.start,user.id,input.end,input.start);
+  if(inserted.meta.changes!==windows.length)problem('One or more recurring shifts overlap another shift or offer. No shifts were added.',409);
+  return result({id:inserted.meta.last_row_id,created:windows.length},201);
  }
  const personalShiftMatch=/^\/api\/my-shifts\/(\d+)$/.exec(route);
  if(personalShiftMatch&&method==='PATCH'){
@@ -376,12 +410,17 @@ async function api(req,env,url){
    if(!await one(env,"SELECT id FROM ml_users WHERE id=? AND active=1 AND role<>'admin'",requesterId))problem('Choose an active non-admin team member.',404);
    const location=String(input.location||'').trim();if(!location||location.length>120)problem('Enter a location of 120 characters or fewer.');
    const cents=rate(input.hourlyRate);
+   const windows=recurringWindows(raw,input),series=JSON.stringify(windows);
    const inserted=await run(env,`INSERT INTO ml_bookings(doctor_id,requester_id,date,end_date,start_time,end_time,note,rate_cents,location,approval_owner,status)
-    SELECT ?,?,?,?,?,?,?,?,?,'assignee','pending' WHERE NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE (b.requester_id=? OR b.doctor_id=?) AND b.status='approved' AND b.date||'T'||b.start_time<? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>?)
-    AND NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE b.requester_id=? AND b.status='pending' AND b.approval_owner='assignee' AND b.date||'T'||b.start_time<? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>?)`,
-    doctorId,requesterId,input.date,input.endDate,input.start,input.end,note,cents,location,requesterId,requesterId,`${input.endDate}T${input.end}`,`${input.date}T${input.start}`,requesterId,`${input.endDate}T${input.end}`,`${input.date}T${input.start}`);
-   if(inserted.meta.changes!==1)problem('This team member already has a booking or pending offer at this time.',409);
-   return result({id:inserted.meta.last_row_id},201);
+    SELECT ?,?,o.date,o.end_date,?,?,?,?,?,'assignee','pending' FROM jsonb_to_recordset(?::jsonb) AS o(date text,end_date text)
+    WHERE EXISTS(SELECT 1 FROM ml_users WHERE id=? AND active=1 AND role<>'admin')
+    AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(?::jsonb) o JOIN ml_bookings b ON (b.requester_id=? OR b.doctor_id=?) AND b.status='approved' AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
+    AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(?::jsonb) o JOIN ml_bookings b ON b.requester_id=? AND b.status='pending' AND b.approval_owner='assignee' AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
+    AND NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE (b.requester_id=? OR b.doctor_id=?) AND b.status='approved' AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
+    AND NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE b.requester_id=? AND b.status='pending' AND b.approval_owner='assignee' AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)`,
+    doctorId,requesterId,input.start,input.end,note,cents,location,series,requesterId,series,requesterId,requesterId,input.end,input.start,series,requesterId,input.end,input.start,requesterId,requesterId,requesterId,input.end,input.start,requesterId,input.end,input.start);
+   if(inserted.meta.changes!==windows.length)problem('One or more shifts conflict with a booking or pending offer. No offers were sent.',409);
+   return result({id:inserted.meta.last_row_id,created:windows.length},201);
   }
   const inserted=await run(env,`INSERT INTO ml_bookings(doctor_id,requester_id,date,end_date,start_time,end_time,note,rate_cents,location,status)
     SELECT ?,?,?,?,?,?,?,a.rate_cents,a.location,'pending' FROM ml_availability a JOIN ml_users d ON d.id=a.doctor_id AND d.active=1 AND d.role IN ('admin','doctor')
