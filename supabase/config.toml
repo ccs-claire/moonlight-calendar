@@ -1,2 +1,8 @@
 [functions.moonlight]
 verify_jwt = false
+
+[remotes.production]
+project_id = "togqfkozpqwqztotnjad"
+
+[remotes.production.functions.moonlight]
+verify_jwt = false

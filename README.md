@@ -26,22 +26,22 @@ Supabase provides `SUPABASE_URL` to Edge Functions automatically. New Supabase s
 
 Use the new `sb_publishable_...` and `sb_secret_...` key formats only. Supabase is deprecating the legacy `anon` and `service_role` API keys by the end of 2026; this app does not need either legacy key. See [Supabase's API key migration guide](https://supabase.com/docs/guides/getting-started/migrating-to-new-api-keys).
 
-## Deploy the Supabase API
+## Deploy the Supabase API from GitHub
 
-The schema can be applied in the Dashboard as described above. Deploy the function from this repository with the Supabase CLI. From the project folder:
+Cloudflare's GitHub connection deploys the website Worker; it does not deploy the Supabase Edge Function. Connect the same GitHub repository separately in Supabase:
 
-```bash
-npx supabase login
-npx supabase functions deploy moonlight --project-ref YOUR_PROJECT_REF
-```
+1. In Supabase, open **Project Settings → Integrations → GitHub Integration** and authorize Supabase for the `ccs-claire/moonlight-calendar` repository.
+2. Set **Working directory** to `.` because the `supabase/` folder is at the repository root.
+3. Enable **Deploy to production** and select the `master` production branch, then save the integration.
+4. Push the repository changes, including `supabase/functions/moonlight/index.ts` and `supabase/config.toml`, to `master`. Supabase will deploy the function declared in the config when it processes that commit. If the integration was already connected before these files were pushed, make a new commit touching a file in `supabase/` to trigger deployment.
 
-Find the project ref in the Supabase project URL, `https://YOUR_PROJECT_REF.supabase.co`. Re-run the deploy command whenever the function code changes. The function's endpoint will be:
+The function is named `moonlight`; its endpoint is:
 
 ```text
 https://YOUR_PROJECT_REF.supabase.co/functions/v1/moonlight
 ```
 
-The function has Supabase JWT verification disabled because the app uses its own signed-in session cookie. Its API routes still check the user's session and role; the Cloudflare Worker passes only the publishable key to reach the function gateway.
+The repository config turns Supabase's built-in JWT verification off for this function because the app uses its own signed-in session cookie. Its API routes still check the user's session and role; the Cloudflare Worker passes the publishable key to reach the function gateway. Keep the Edge Function secrets configured in Supabase; GitHub deploys the code, not those secret values.
 
 ## Deploy the website on Cloudflare
 
