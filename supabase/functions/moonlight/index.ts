@@ -381,7 +381,7 @@ async function api(req,env,url){
   const inserted=await run(env,`INSERT INTO ml_bookings(doctor_id,requester_id,date,end_date,start_time,end_time,note,rate_cents,location,approval_owner,status)
    SELECT ?,?,o.date,o.end_date,?,?,?,?,?,'admin','approved' FROM jsonb_to_recordset(?::jsonb) AS o(date text,end_date text)
    WHERE EXISTS(SELECT 1 FROM ml_users WHERE id=? AND active=1 AND deleted_at IS NULL)
-   AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(?::jsonb) o JOIN ml_bookings b ON b.requester_id=? AND b.status IN ('pending','approved') AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
+   AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(?::jsonb) AS o(date text,end_date text) JOIN ml_bookings b ON b.requester_id=? AND b.status IN ('pending','approved') AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
    AND NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE b.requester_id=? AND b.status IN ('pending','approved') AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)`,
    user.id,user.id,input.start,input.end,note,cents,location,series,user.id,series,user.id,input.end,input.start,user.id,input.end,input.start);
   if(inserted.meta.changes!==windows.length)problem('One or more recurring shifts overlap another shift or offer. No shifts were added.',409);
@@ -416,11 +416,11 @@ async function api(req,env,url){
    const inserted=await run(env,`INSERT INTO ml_bookings(doctor_id,requester_id,date,end_date,start_time,end_time,note,rate_cents,location,approval_owner,status)
     SELECT ?,?,o.date,o.end_date,?,?,?,?,?,'assignee','pending' FROM jsonb_to_recordset(?::jsonb) AS o(date text,end_date text)
     WHERE EXISTS(SELECT 1 FROM ml_users WHERE id=? AND active=1 AND role<>'admin')
-    AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(?::jsonb) o JOIN ml_bookings b ON (b.requester_id=? OR b.doctor_id=?) AND b.status='approved' AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
-    AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(?::jsonb) o JOIN ml_bookings b ON b.requester_id=? AND b.status='pending' AND b.approval_owner='assignee' AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
+    AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(?::jsonb) AS o(date text,end_date text) JOIN ml_bookings b ON (b.requester_id=? OR b.doctor_id=?) AND b.status='approved' AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
+    AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(?::jsonb) AS o(date text,end_date text) JOIN ml_bookings b ON b.requester_id=? AND b.status='pending' AND b.approval_owner='assignee' AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
     AND NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE (b.requester_id=? OR b.doctor_id=?) AND b.status='approved' AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)
     AND NOT EXISTS(SELECT 1 FROM ml_bookings b WHERE b.requester_id=? AND b.status='pending' AND b.approval_owner='assignee' AND b.date||'T'||b.start_time<o.end_date||'T'||? AND COALESCE(NULLIF(b.end_date,''),b.date)||'T'||b.end_time>o.date||'T'||?)`,
-    doctorId,requesterId,input.start,input.end,note,cents,location,series,requesterId,series,requesterId,requesterId,input.end,input.start,series,requesterId,input.end,input.start,requesterId,requesterId,requesterId,input.end,input.start,requesterId,input.end,input.start);
+    doctorId,requesterId,input.start,input.end,note,cents,location,series,requesterId,series,requesterId,requesterId,input.end,input.start,series,requesterId,input.end,input.start,requesterId,requesterId,input.end,input.start,requesterId,input.end,input.start);
    if(inserted.meta.changes!==windows.length)problem('One or more shifts conflict with a booking or pending offer. No offers were sent.',409);
    return result({id:inserted.meta.last_row_id,created:windows.length},201);
   }
