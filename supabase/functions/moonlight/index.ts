@@ -377,7 +377,7 @@ async function api(req,env,url){
   const user=await requireUser(req,env),raw=await readBody(req),input={...raw,...checkWindow(raw)};
   const note=String(input.note||'').trim(),location=text(input.location,120,'Location'),cents=rate(input.hourlyRate);
   if(note.length>500)problem('Note must be 500 characters or fewer.');
-  const windows=recurringWindows(raw,input),series=JSON.stringify(windows);
+  const windows=recurringWindows(raw,input),series=JSON.stringify(windows.map(({date,endDate})=>({date,end_date:endDate})));
   const inserted=await run(env,`INSERT INTO ml_bookings(doctor_id,requester_id,date,end_date,start_time,end_time,note,rate_cents,location,approval_owner,status)
    SELECT ?,?,o.date,o.end_date,?,?,?,?,?,'admin','approved' FROM jsonb_to_recordset(?::jsonb) AS o(date text,end_date text)
    WHERE EXISTS(SELECT 1 FROM ml_users WHERE id=? AND active=1 AND deleted_at IS NULL)
@@ -412,7 +412,7 @@ async function api(req,env,url){
    if(!await one(env,"SELECT id FROM ml_users WHERE id=? AND active=1 AND role<>'admin'",requesterId))problem('Choose an active non-admin team member.',404);
    const location=String(input.location||'').trim();if(!location||location.length>120)problem('Enter a location of 120 characters or fewer.');
    const cents=rate(input.hourlyRate);
-   const windows=recurringWindows(raw,input),series=JSON.stringify(windows);
+   const windows=recurringWindows(raw,input),series=JSON.stringify(windows.map(({date,endDate})=>({date,end_date:endDate})));
    const inserted=await run(env,`INSERT INTO ml_bookings(doctor_id,requester_id,date,end_date,start_time,end_time,note,rate_cents,location,approval_owner,status)
     SELECT ?,?,o.date,o.end_date,?,?,?,?,?,'assignee','pending' FROM jsonb_to_recordset(?::jsonb) AS o(date text,end_date text)
     WHERE EXISTS(SELECT 1 FROM ml_users WHERE id=? AND active=1 AND role<>'admin')
